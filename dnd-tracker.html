@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DnD Character Tracker</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    max-width: 700px;
+    margin: 0 auto;
+    padding: 16px;
+    background: #1e1b16;
+    color: #eee;
+  }
+  h1 { font-size: 1.4em; margin-bottom: 4px; }
+  h2 { font-size: 1.1em; margin: 20px 0 8px; border-bottom: 1px solid #444; padding-bottom: 4px; }
+  select, button, input {
+    font-size: 1em;
+    padding: 8px;
+    margin: 4px 0;
+    border-radius: 6px;
+    border: 1px solid #555;
+    background: #2a2620;
+    color: #eee;
+  }
+  button {
+    background: #7a3b2e;
+    border: none;
+    cursor: pointer;
+  }
+  button:hover { background: #914633; }
+  button.secondary { background: #444; }
+  button.danger { background: #8a2f2f; }
+  .stat-group { margin-bottom: 16px; }
+  .stat-field {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 6px 0;
+    border-bottom: 1px solid #333;
+  }
+  .stat-field label { flex: 1; }
+  .stat-field input { width: 100px; text-align: right; }
+  .item-row {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    padding: 6px 0;
+    border-bottom: 1px solid #333;
+  }
+  .item-row span { flex: 1; }
+  .item-row input[type="number"] { width: 60px; }
+  .top-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .top-bar select { flex: 1; min-width: 140px; }
+  .muted { color: #999; font-size: 0.85em; }
+  .add-item-form { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+  .add-item-form input { flex: 1; min-width: 80px; }
+</style>
+</head>
+<body>
+
+<h1>DnD Character Tracker</h1>
+<p class="muted">Saved locally in this browser.</p>
+
+<div class="top-bar">
+  <select id="characterSelect"></select>
+  <button onclick="createCharacter()">+ New Character</button>
+  <button class="danger" onclick="deleteCharacter()">Delete</button>
+</div>
+
+<div id="sheet"></div>
+
+<script>
+
+// func for derived mods
+function derive(score){
+  return Math.floor((score - 10) / 2);
+}
+
+function formatMod(score) {
+  const mod = derive(score);
+  return (mod >= 0 ? "+" : "") + mod;
+}
+/* ---------- 1. STAT SCHEMA ---------- */
+/* This is the "what stats exist" layer
+   Swap this array to support a different system (Pathfinder, homebrew, etc). */
+const statDefinitions = [
+  { id: "corruption",   label: "Corruption",   type: "number", group: "Abilities", default: 10, computed: false },
+  { id: "strength",     label: "Strength",     type: "number", group: "Abilities", default: 10, computed: true },
+  { id: "dexterity",    label: "Dexterity",    type: "number", group: "Abilities", default: 10, computed: true },
+  { id: "constitution", label: "Constitution", type: "number", group: "Abilities", default: 10, computed: true },
+  { id: "intelligence", label: "Intelligence", type: "number", group: "Abilities", default: 10, computed: true },
+  { id: "wisdom",       label: "Wisdom",       type: "number", group: "Abilities", default: 10, computed: true },
+  { id: "charisma",     label: "Charisma",     type: "number", group: "Abilities", default: 10, computed: true },
+  { id: "hp",           label: "Hit Points",   type: "number", group: "Combat",    default: 10, computed: false },
+  { id: "maxHp",        label: "Max HP",       type: "number", group: "Combat",    default: 10, computed: false },
+  { id: "ac",           label: "Armor Class",  type: "number", group: "Combat",    default: 10, computed: false },
+  { id: "level",        label: "Level",        type: "number", group: "Combat",    default: 1, computed: false },
+];
+
+/* ---------- 2. STORAGE LAYER (localStorage instead of Dexie/IndexedDB) ---------- */
+const STORAGE_KEY = "dnd-tracker-data";
+
+function loadData() {
+  const raw = localStorage.getItem(STORAGE_KEY);
+  if (!raw) return { characters: {}, activeId: null };
+  return JSON.parse(raw);
+}
+
+function saveData(data) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+}
+
+let data = loadData();
+
+/* ---------- 3. CHARACTER MANAGEMENT ---------- */
+function createCharacter() {
+  const name = prompt("Character name:");
+  if (!name) return;
+  const id = "char_" + Date.now();
+  const stats = {};
+  statDefinitions.forEach(def => stats[def.id] = def.default);
+  data.characters[id] = { id, name, stats, items: [] };
+  data.activeId = id;
+  saveData(data);
+  render();
+}
+
+function deleteCharacter() {
+  if (!data.activeId) return;
+  const char = data.characters[data.activeId];
+  if (!confirm(`Delete ${char.name}? This can't be undone.`)) return;
+  delete data.characters[data.activeId];
+  data.activeId = Object.keys(data.characters)[0] || null;
+  saveData(data);
+  render();
+}
+
+function selectCharacter(id) {
+  data.activeId = id;
+  saveData(data);
+  render();
+}
+
+/* ---------- 4. ITEM MANAGEMENT ---------- */
+function addItem() {
+  const nameInput = document.getElementById("newItemName");
+  const qtyInput = document.getElementById("newItemQty");
+  const name = nameInput.value.trim();
+  const qty = parseInt(qtyInput.value) || 1;
+  if (!name) return;
+  const char = data.characters[data.activeId];
+  char.items.push({ id: "item_" + Date.now(), name, qty, equipped: false });
+  saveData(data);
+  render();
+}
+
+function updateItemQty(itemId, qty) {
+  const char = data.characters[data.activeId];
+  const item = char.items.find(i => i.id === itemId);
+  item.qty = parseInt(qty) || 0;
+  saveData(data);
+}
+
+function toggleEquipped(itemId) {
+  const char = data.characters[data.activeId];
+  const item = char.items.find(i => i.id === itemId);
+  item.equipped = !item.equipped;
+  saveData(data);
+  render();
+}
+
+function deleteItem(itemId) {
+  const char = data.characters[data.activeId];
+  char.items = char.items.filter(i => i.id !== itemId);
+  saveData(data);
+  render();
+}
+
+/* ---------- 5. STAT VALUE UPDATES ---------- */
+function updateStat(statId, value) {
+  const char = data.characters[data.activeId];
+  char.stats[statId] = value;
+  saveData(data);
+
+  const modSpan = document.getElementById("mod-" + statId);
+  if (modSpan) {
+    modSpan.textContent = " (" + formatMod(value) + ")";
+  }
+}
+
+/* ---------- 6. RENDERING (schema-driven: loops over statDefinitions) ---------- */
+function render() {
+  // Populate character dropdown
+  const select = document.getElementById("characterSelect");
+  select.innerHTML = "";
+  const ids = Object.keys(data.characters);
+
+  if (ids.length === 0) {
+    select.innerHTML = "<option>No characters yet</option>";
+    document.getElementById("sheet").innerHTML = "<p class='muted'>Create a character to get started.</p>";
+    return;
+  }
+
+  ids.forEach(id => {
+    const opt = document.createElement("option");
+    opt.value = id;
+    opt.textContent = data.characters[id].name;
+    if (id === data.activeId) opt.selected = true;
+    select.appendChild(opt);
+  });
+  select.onchange = (e) => selectCharacter(e.target.value);
+
+  if (!data.activeId || !data.characters[data.activeId]) {
+    data.activeId = ids[0];
+  }
+
+  const char = data.characters[data.activeId];
+  const sheet = document.getElementById("sheet");
+  sheet.innerHTML = "";
+
+  // Group stat definitions by their "group" field
+  const groups = {};
+  statDefinitions.forEach(def => {
+    if (!groups[def.group]) groups[def.group] = [];
+    groups[def.group].push(def);
+  });
+
+  // Render each group and its stat fields
+  Object.entries(groups).forEach(([groupName, defs]) => {
+    const groupDiv = document.createElement("div");
+    groupDiv.className = "stat-group";
+    const heading = document.createElement("h2");
+    heading.textContent = groupName;
+    groupDiv.appendChild(heading);
+
+    defs.forEach(def => {
+      const row = document.createElement("div");
+      row.className = "stat-field";
+      const label = document.createElement("label");
+      label.textContent = def.label;
+
+      if (def.computed) {
+        const modSpan = document.createElement("span");
+        modSpan.id = "mod-" + def.id;
+        modSpan.textContent = " (" + formatMod(char.stats[def.id]) + ")";
+        label.appendChild(modSpan);
+      }
+
+      const input = document.createElement("input");
+      input.type = def.type === "number" ? "number" : "text";
+      input.value = char.stats[def.id];
+      input.oninput = (e) => updateStat(def.id, e.target.value);
+      row.appendChild(label);
+      row.appendChild(input);
+      groupDiv.appendChild(row);
+    });
+
+    sheet.appendChild(groupDiv);
+  });
+
+  // Render items/inventory
+  const itemsDiv = document.createElement("div");
+  itemsDiv.className = "stat-group";
+  itemsDiv.innerHTML = "<h2>Inventory</h2>";
+
+  char.items.forEach(item => {
+    const row = document.createElement("div");
+    row.className = "item-row";
+    row.innerHTML = `
+      <span>${item.equipped ? "⚔️ " : ""}${item.name}</span>
+      <input type="number" value="${item.qty}" min="0" onchange="updateItemQty('${item.id}', this.value)">
+      <button class="secondary" onclick="toggleEquipped('${item.id}')">${item.equipped ? "Unequip" : "Equip"}</button>
+      <button class="danger" onclick="deleteItem('${item.id}')">✕</button>
+    `;
+    itemsDiv.appendChild(row);
+  });
+
+  const addForm = document.createElement("div");
+  addForm.className = "add-item-form";
+  addForm.innerHTML = `
+    <input type="text" id="newItemName" placeholder="Item name">
+    <input type="number" id="newItemQty" placeholder="Qty" value="1" min="1">
+    <button onclick="addItem()">+ Add Item</button>
+  `;
+  itemsDiv.appendChild(addForm);
+
+  sheet.appendChild(itemsDiv);
+}
+
+/* ---------- Initial render on page load ---------- */
+render();
+</script>
+
+</body>
+</html>
